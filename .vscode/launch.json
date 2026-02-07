@@ -1,0 +1,60 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug GeoContext",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=geocontext",
+                    "--package=geocontext"
+                ],
+                "filter": {
+                    "name": "geocontext",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug,geocontext=trace"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Tests",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=geocontext"
+                ],
+                "filter": {
+                    "name": "geocontext",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug H3 Enricher Tests",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--package=geocontext",
+                    "enrichers::h3"
+                ]
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

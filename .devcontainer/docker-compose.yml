@@ -1,0 +1,29 @@
+services:
+  geocontext:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    volumes:
+      # Montar el workspace
+      - ../..:/workspaces:cached
+    
+    # Cargar variables de entorno desde .env
+    env_file:
+      - ../.env
+    
+    # Mantener el contenedor corriendo
+    command: tail -f /dev/null
+    
+    # Red externa para conectar con Kafka/Redpanda
+    networks:
+      - siscom-network
+    
+    # Nombre del contenedor
+    container_name: geocontext-dev
+
+networks:
+  siscom-network:
+    external: true
+
+

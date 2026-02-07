@@ -1,0 +1,56 @@
+{
+    "name": "GeoContext Rust Microservice",
+    "dockerComposeFile": "./docker-compose.yml",
+    "service": "geocontext",
+    "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+    
+    // Script que se ejecuta después de crear el contenedor
+    "postCreateCommand": "/usr/local/bin/start-geocontext.sh",
+    
+    // Configurar el usuario dentro del contenedor
+    "remoteUser": "vscode",
+    
+    // Personalización de VS Code
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                // Rust
+                "rust-lang.rust-analyzer",
+                "vadimcn.vscode-lldb",
+                "serayuzgur.crates",
+                
+                // Docker
+                "ms-azuretools.vscode-docker",
+                
+                // YAML/TOML
+                "redhat.vscode-yaml",
+                "tamasfe.even-better-toml",
+                
+                // Git
+                "eamodio.gitlens",
+                
+                // Utilidades
+                "aaron-bond.better-comments",
+                "streetsidesoftware.code-spell-checker"
+            ],
+            
+            "settings": {
+                "rust-analyzer.checkOnSave.command": "clippy",
+                "rust-analyzer.cargo.features": "all",
+                "editor.formatOnSave": true,
+                "editor.defaultFormatter": "rust-lang.rust-analyzer",
+                "[rust]": {
+                    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+                },
+                "files.watcherExclude": {
+                    "**/target/**": true
+                }
+            }
+        }
+    },
+    
+    // Features adicionales
+    "features": {
+        "ghcr.io/devcontainers/features/git:1": {}
+    }
+}
