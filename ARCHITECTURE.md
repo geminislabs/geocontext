@@ -31,9 +31,9 @@ El proyecto `geocontext` implementa una **arquitectura hexagonal (ports & adapte
          │                                      │
          │    DOMINIO (Eventos de Negocio)      │
          │    ┌───────────────────────────┐     │
-         └───►│ SiscomMinimalEvent        │◄────┘
-              │ SiscomEnrichedEvent       │
-              │ GeoContext                │
+         └───►│ InboundEvent              │◄────┘
+              │ EntityPositionUpdate      │
+              │ H3Context                 │
               └───────────────────────────┘
          │                                      │
          ▼                                      ▼
@@ -99,19 +99,28 @@ pub struct ProduceRequest<'a> {
 
 #### `domain/event.rs`
 ```rust
-pub struct SiscomMinimalEvent {
-    pub data: Value,  // Evento de entrada
+pub struct InboundEvent {
+    pub topic: String,
+    pub data: Value,
 }
 
-pub struct SiscomEnrichedEvent {
-    pub original: Value,
-    pub geo_context: Option<GeoContext>,  // Enriquecimiento
-}
-
-pub struct GeoContext {
-    pub h3_index: Option<String>,
-    pub region: Option<String>,
-    pub metadata: Option<Value>,
+pub struct EntityPositionUpdate {
+    pub source: Option<String>,
+    pub device_id: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub recorded_at: Option<String>,
+    pub received_at: Option<String>,
+    pub accuracy_m: Option<f64>,
+    pub speed_mps: Option<f64>,
+    pub heading: Option<f64>,
+    pub altitude_m: Option<f64>,
+    pub battery_level: Option<f64>,
+    pub h3_10: Option<String>,
+    pub h3_10_ring_1: Option<Vec<String>>,
+    pub h3_9: Option<String>,
+    pub h3_8: Option<String>,
+    pub h3_7: Option<String>,
 }
 ```
 
@@ -134,10 +143,10 @@ pub struct InputConsumer {
 
 impl InputConsumer {
     pub async fn receive_event(&self) 
-        -> Result<Option<(SiscomMinimalEvent, MessageContext)>> 
+        -> Result<Option<(InboundEvent, MessageContext)>> 
     {
         // 1. Recibe KafkaMessage de la infra
-        // 2. Convierte a SiscomMinimalEvent (dominio)
+        // 2. Convierte a InboundEvent (dominio)
         // 3. Retorna evento + contexto
     }
 }
@@ -145,7 +154,7 @@ impl InputConsumer {
 
 **Flujo**:
 ```
-KafkaMessage (bytes) → JSON parsing → SiscomMinimalEvent (dominio)
+KafkaMessage (bytes) → JSON parsing → InboundEvent (dominio)
 ```
 
 **`MessageContext`**: Mantiene información de Kafka necesaria para commit, pero sin exponer `rdkafka`:
@@ -171,7 +180,7 @@ pub struct OutputProducer {
 impl OutputProducer {
     pub async fn publish_event(
         &self,
-        event: &SiscomEnrichedEvent,  // Dominio
+        event: &EntityPositionUpdate,  // Dominio
         key: Option<&str>,
     ) -> Result<PublishResult> 
     {
@@ -184,7 +193,7 @@ impl OutputProducer {
 
 **Flujo**:
 ```
-SiscomEnrichedEvent (dominio) → JSON serialization → ProduceRequest (bytes) → Kafka
+EntityPositionUpdate (dominio) → JSON serialization → ProduceRequest (bytes) → Kafka
 ```
 
 ---
@@ -205,8 +214,8 @@ pub struct Processor {
 
 **Flujo de procesamiento**:
 
-1. **Recibir**: `input.receive_event()` → `(SiscomMinimalEvent, MessageContext)`
-2. **Enriquecer**: `enrich_event()` → `SiscomEnrichedEvent`
+1. **Recibir**: `input.receive_event()` → `(InboundEvent, MessageContext)`
+2. **Normalizar + Enriquecer**: `enrich_event()` → `EntityPositionUpdate`
 3. **Publicar**: `output.publish_event()` → `PublishResult`
 4. **Commit condicional**:
    - Si `commit_on_produce_success=true`: commit solo si publish OK
@@ -217,7 +226,7 @@ async fn process_single_message(&self) -> Result<bool> {
     // 1. Input adapter: Kafka → Dominio
     let (event, context) = self.input.receive_event().await?;
     
-    // 2. Enriquecimiento
+    // 2. Normalización + enriquecimiento
     let enriched = self.enrich_event(event)?;
     
     // 3. Output adapter: Dominio → Kafka
@@ -260,53 +269,82 @@ pipeline/    → "¿Cómo orquesto el flujo completo?"
 
 ---
 
+## 🧭 Vecinos H3 (`h3_10_ring_1`)
+
+El mensaje canónico de salida incluye:
+
+```json
+{
+    "h3_10": "A",
+    "h3_10_ring_1": ["B", "C", "D", "E", "F", "G"]
+}
+```
+
+Semántica esperada del campo:
+
+```text
+gridRing(h3_10, 1)
+```
+
+Diferencia operativa:
+
+- `gridRing(h, 1)`: devuelve solo la corona de distancia exacta 1 (sin `h`).
+- `gridDisk(h, 1)`: devuelve distancia <= 1 (incluye `h` + vecinos).
+
+Decisión de este servicio:
+
+- Se usa `gridDisk(h3_10, 1)` y se excluye la celda central.
+- Motivo: normalizar vecinos mínimos sin repetir `h3_10`, manteniendo un formato canónico que otras entidades puedan explotar directamente.
+
+---
+
 ## 🔄 Flujo Completo de un Mensaje
 
 ```
 1. INFRAESTRUCTURA (kafka/consumer.rs)
-   ┌─────────────────────────────────────┐
-   │ KafkaConsumer::receive_message()    │
-   │ ↓                                   │
-   │ KafkaMessage { payload: Vec<u8> }   │
-   └──────────────┬──────────────────────┘
-                  │
+    ┌─────────────────────────────────────┐
+    │ KafkaConsumer::receive_message()    │
+    │ ↓                                   │
+    │ KafkaMessage { payload: Vec<u8> }   │
+    └──────────────┬──────────────────────┘
+                        │
 2. INPUT ADAPTER (input/consumer.rs)
-   ┌──────────────▼──────────────────────┐
-   │ InputConsumer::receive_event()      │
-   │ ↓                                   │
-   │ parse JSON                          │
-   │ ↓                                   │
-   │ (SiscomMinimalEvent, MessageContext)│
-   └──────────────┬──────────────────────┘
-                  │
+    ┌──────────────▼──────────────────────┐
+    │ InputConsumer::receive_event()      │
+    │ ↓                                   │
+    │ parse JSON                          │
+    │ ↓                                   │
+    │ (InboundEvent, MessageContext)      │
+    └──────────────┬──────────────────────┘
+                        │
 3. PIPELINE (pipeline/processor.rs)
-   ┌──────────────▼──────────────────────┐
-   │ Processor::enrich_event()           │
-   │ ↓                                   │
-   │ SiscomEnrichedEvent                 │
-   └──────────────┬──────────────────────┘
-                  │
+    ┌──────────────▼──────────────────────┐
+    │ Processor::normalize + enrich       │
+    │ ↓                                   │
+    │ EntityPositionUpdate                │
+    └──────────────┬──────────────────────┘
+                        │
 4. OUTPUT ADAPTER (output/producer.rs)
-   ┌──────────────▼──────────────────────┐
-   │ OutputProducer::publish_event()     │
-   │ ↓                                   │
-   │ serialize to JSON                   │
-   │ ↓                                   │
-   │ ProduceRequest { payload: &[u8] }   │
-   └──────────────┬──────────────────────┘
-                  │
+    ┌──────────────▼──────────────────────┐
+    │ OutputProducer::publish_event()     │
+    │ ↓                                   │
+    │ serialize to JSON                   │
+    │ ↓                                   │
+    │ ProduceRequest { payload: &[u8] }   │
+    └──────────────┬──────────────────────┘
+                        │
 5. INFRAESTRUCTURA (kafka/producer.rs)
-   ┌──────────────▼──────────────────────┐
-   │ KafkaProducer::send()               │
-   │ ↓                                   │
-   │ PublishResult { partition, offset } │
-   └──────────────┬──────────────────────┘
-                  │
+    ┌──────────────▼──────────────────────┐
+    │ KafkaProducer::send()               │
+    │ ↓                                   │
+    │ PublishResult { partition, offset } │
+    └──────────────┬──────────────────────┘
+                        │
 6. COMMIT (pipeline/processor.rs)
-   ┌──────────────▼──────────────────────┐
-   │ if commit_on_produce_success:       │
-   │   input.commit_offset(context)      │
-   └─────────────────────────────────────┘
+    ┌──────────────▼──────────────────────┐
+    │ if commit_on_produce_success:       │
+    │   input.commit_offset(context)      │
+    └─────────────────────────────────────┘
 ```
 
 ---

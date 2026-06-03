@@ -23,8 +23,7 @@ use crate::enrichers::h3;
 let lat = 19.4326;  // Ciudad de México
 let lon = -99.1332;
 
-// El parámetro `resolution` se conserva por compatibilidad, pero se ignora.
-if let Some(h3_context) = h3::enrich_with_h3(lat, lon, 10) {
+if let Some(h3_context) = h3::enrich_with_h3(lat, lon) {
   println!("H3 r10: {}", h3_context.r10);
   println!("H3 r9:  {}", h3_context.r9);
   println!("H3 r8:  {}", h3_context.r8);
@@ -37,7 +36,6 @@ if let Some(h3_context) = h3::enrich_with_h3(lat, lon, 10) {
 
 - `lat`: Latitud en grados decimales (-90 a 90)
 - `lon`: Longitud en grados decimales (-180 a 180)  
-- `resolution`: Se mantiene por compatibilidad, pero **se ignora**. El enricher siempre calcula `r10` y deriva `r9` → `r6` desde la jerarquía H3.
 
 ### Retorno
 
@@ -80,10 +78,6 @@ Ambos formatos (número o string) son parseados correctamente.
 
 La resolución base usada para `r10` es fija y actualmente es 10. Las resoluciones menores se derivan usando la jerarquía H3.
 
-```bash
-H3_RESOLUTION=10  # Legacy (no afecta el cálculo actual)
-```
-
 Valores de referencia:
 - **10**: Barrio/colonia (~0.015 km²) ← Base fija (r10)
 - **9**: Zona urbana (~0.10 km²)
@@ -93,39 +87,42 @@ Valores de referencia:
 
 ## Output
 
-El resultado se agrega al campo `geo_context.h3` del evento enriquecido:
+Además del índice base `h3_10`, el pipeline puede publicar `h3_10_ring_1`, que representa vecinos inmediatos de primer nivel.
+
+Semántica esperada:
+
+```text
+gridRing(h3_10, 1)
+```
+
+Estrategia implementada para normalización:
+
+```text
+gridDisk(h3_10, 1) - {h3_10}
+```
+
+Esto evita repetir el centro y deja una lista mínima/canónica de vecinos para que otras entidades la exploten directamente.
+
+### Diferencia entre `gridRing` y `gridDisk`
+
+- `gridRing(h, 1)`: devuelve solo la corona exterior (distancia exacta 1).
+- `gridDisk(h, 1)`: devuelve todas las celdas con distancia <= 1 (incluye el centro).
+
+Para `h3_10_ring_1`, ambas estrategias son equivalentes si al `gridDisk` se le excluye el centro.
+
+El resultado se integra al evento canónico `EntityPositionUpdate`:
 
 ```json
 {
-  "backup_batery_voltage": "0.0",
-  "cell_id": "03675103",
-  "course": "0.00",
-  "engine_status": "OFF",
-  "fix_status": "1",
-  "gps_datetime": "2024-04-09 16:22:26",
-  "gps_epoch": 1712679746,
-  "latitude": "+20.574605",
-  "longitude": "-100.359826",
-  "main_battery_voltage": "11.43",
-  "mcc": "334",
-  "mnc": "20",
-  "msg_class": "STATUS",
-  "network_status": "SERVER DISCONNECTED",
-  "odometer": "730327",
-  "received_at": 1770444644983,
-  "rx_lvl": "33",
-  "speed": "0.00",
-  "stellites": "15",
-  "uuid": "ce69b8ac-4c55-5db8-a8b2-5b739b6b078e",
-  "geo_context": {
-    "h3": {
-      "r10": "8a4983d9b907fff",
-      "r9": "894983d9b93ffff",
-      "r8": "884983d9b9fffff",
-      "r7": "874983d9bffffff",
-      "r6": "864983d9fffffff"
-    }
-  }
+  "source": "gps",
+  "device_id": "ce69b8ac-4c55-5db8-a8b2-5b739b6b078e",
+  "lat": 20.574605,
+  "lon": -100.359826,
+  "h3_10": "8a4983d9b907fff",
+  "h3_10_ring_1": ["8a4983d9b90ffff", "8a4983d9b917fff"],
+  "h3_9": "894983d9b93ffff",
+  "h3_8": "884983d9b9fffff",
+  "h3_7": "874983d9bffffff"
 }
 ```
 
@@ -139,7 +136,6 @@ cargo test enrichers::h3
 
 Tests incluidos:
 - Coordenadas válidas
-- Diferentes resoluciones
 - Latitudes inválidas (fuera de rango, infinitas, NaN)
 - Longitudes inválidas
 - Casos edge (límites de rangos)

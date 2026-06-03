@@ -1,0 +1,186 @@
+name: Build, Test and Deploy
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    name: Build and Test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            cmake \
+            libsasl2-dev \
+            libssl-dev \
+            libcurl4-openssl-dev
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: geocontext-rust
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build release binary
+        run: cargo build --release --verbose
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    name: Deploy to EC2
+    environment: production
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+      EC2_SSH_PORT: ${{ secrets.EC2_SSH_PORT }}
+      EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create SSH key file
+        run: |
+          mkdir -p ~/.ssh
+          echo "${EC2_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p ${EC2_SSH_PORT} ${EC2_HOST} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Prepare .env file
+        run: |
+          cat > .env << 'EOF'
+          KAFKA_BROKERS=${{ vars.KAFKA_BROKERS }}
+          KAFKA_GROUP_ID=${{ vars.KAFKA_GROUP_ID }}
+          KAFKA_SASL_MECHANISM=${{ vars.KAFKA_SASL_MECHANISM }}
+          KAFKA_USERNAME=${{ vars.KAFKA_USERNAME }}
+          KAFKA_PASSWORD=${{ secrets.KAFKA_PASSWORD }}
+          KAFKA_SECURITY_PROTOCOL=${{ vars.KAFKA_SECURITY_PROTOCOL }}
+          KAFKA_INPUT_TOPIC_SISCOM=${{ vars.KAFKA_INPUT_TOPIC_SISCOM }}
+          KAFKA_INPUT_TOPIC_MOBILITY=${{ vars.KAFKA_INPUT_TOPIC_MOBILITY }}
+          KAFKA_OUTPUT_TOPIC_ENTITY_POSITION=${{ vars.KAFKA_OUTPUT_TOPIC_ENTITY_POSITION }}
+          KAFKA_CONSUMER_FETCH_MIN_BYTES=${{ vars.KAFKA_CONSUMER_FETCH_MIN_BYTES }}
+          KAFKA_CONSUMER_FETCH_WAIT_MAX_MS=${{ vars.KAFKA_CONSUMER_FETCH_WAIT_MAX_MS }}
+          KAFKA_CONSUMER_MAX_POLL_INTERVAL_MS=${{ vars.KAFKA_CONSUMER_MAX_POLL_INTERVAL_MS }}
+          KAFKA_CONSUMER_SESSION_TIMEOUT_MS=${{ vars.KAFKA_CONSUMER_SESSION_TIMEOUT_MS }}
+          KAFKA_CONSUMER_ENABLE_AUTO_COMMIT=${{ vars.KAFKA_CONSUMER_ENABLE_AUTO_COMMIT }}
+          KAFKA_PRODUCER_ACKS=${{ vars.KAFKA_PRODUCER_ACKS }}
+          KAFKA_PRODUCER_LINGER_MS=${{ vars.KAFKA_PRODUCER_LINGER_MS }}
+          KAFKA_PRODUCER_BATCH_SIZE=${{ vars.KAFKA_PRODUCER_BATCH_SIZE }}
+          KAFKA_PRODUCER_RETRIES=${{ vars.KAFKA_PRODUCER_RETRIES }}
+          KAFKA_PRODUCER_IDEMPOTENT=${{ vars.KAFKA_PRODUCER_IDEMPOTENT }}
+          COMMIT_ON_PRODUCE_SUCCESS=${{ vars.COMMIT_ON_PRODUCE_SUCCESS }}
+          CB_FAILURE_THRESHOLD=${{ vars.CB_FAILURE_THRESHOLD }}
+          CB_RESET_TIMEOUT_MS=${{ vars.CB_RESET_TIMEOUT_MS }}
+          HEALTH_BIND_ADDR=${{ vars.HEALTH_BIND_ADDR || '0.0.0.0:8080' }}
+          RUST_LOG=${{ vars.RUST_LOG }}
+          EOF
+
+      - name: Prepare runtime Dockerfile
+        run: |
+          cat > Dockerfile.deploy << 'EOF'
+          FROM rust:1.92-bookworm AS builder
+
+          WORKDIR /app
+
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends \
+                 pkg-config \
+                 cmake \
+                 libssl-dev \
+                 libsasl2-dev \
+                 libcurl4-openssl-dev \
+              && rm -rf /var/lib/apt/lists/*
+
+          COPY Cargo.toml Cargo.lock ./
+          COPY src ./src
+          COPY assets ./assets
+
+          RUN cargo build --release --locked
+
+          FROM debian:bookworm-slim
+
+          WORKDIR /app
+
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends \
+                 ca-certificates \
+                 libsasl2-2 \
+                 curl \
+              && rm -rf /var/lib/apt/lists/*
+
+          COPY --from=builder /app/target/release/geocontext /app/geocontext
+          COPY --from=builder /app/assets /app/assets
+
+          EXPOSE 8080
+
+          HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+            CMD sh -c 'PORT="${HEALTH_BIND_ADDR##*:}"; curl -fsS "http://127.0.0.1:${PORT}/health" || exit 1'
+
+          ENTRYPOINT ["/app/geocontext"]
+          EOF
+
+      - name: Deploy to EC2
+        run: |
+          # Create deployment directory
+          ssh -i ~/.ssh/deploy_key -p ${EC2_SSH_PORT} ${EC2_USERNAME}@${EC2_HOST} \
+            "mkdir -p ~/geocontext/assets"
+
+          # Package and upload source, env and runtime Dockerfile
+          tar czf deploy-src.tgz Cargo.toml Cargo.lock src assets
+
+          scp -i ~/.ssh/deploy_key -P ${EC2_SSH_PORT} .env \
+            ${EC2_USERNAME}@${EC2_HOST}:~/geocontext/.env
+
+          scp -i ~/.ssh/deploy_key -P ${EC2_SSH_PORT} Dockerfile.deploy \
+            ${EC2_USERNAME}@${EC2_HOST}:~/geocontext/Dockerfile.deploy
+
+          scp -i ~/.ssh/deploy_key -P ${EC2_SSH_PORT} deploy-src.tgz \
+            ${EC2_USERNAME}@${EC2_HOST}:~/geocontext/deploy-src.tgz
+
+          # Build and run container without systemd service dependency
+          ssh -i ~/.ssh/deploy_key -p ${EC2_SSH_PORT} ${EC2_USERNAME}@${EC2_HOST} \
+            "set -euo pipefail; \
+             command -v docker >/dev/null 2>&1 || { echo 'docker is required on EC2'; exit 1; }; \
+             cd ~/geocontext; \
+             tar xzf deploy-src.tgz; \
+             rm -f deploy-src.tgz; \
+             docker network inspect siscom-network >/dev/null 2>&1 || docker network create siscom-network; \
+             docker rm -f geocontext >/dev/null 2>&1 || true; \
+             docker build -f Dockerfile.deploy -t geocontext:latest .; \
+             docker run -d --name geocontext --restart unless-stopped --network siscom-network --env-file .env geocontext:latest; \
+             echo 'Container deployed successfully'"
+
+      - name: Verify deployment
+        run: |
+          ssh -i ~/.ssh/deploy_key -p ${EC2_SSH_PORT} ${EC2_USERNAME}@${EC2_HOST} \
+            "docker ps --filter name=geocontext --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' && \
+             docker inspect -f '{{json .NetworkSettings.Networks}}' geocontext && \
+             docker logs --tail=50 geocontext"
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

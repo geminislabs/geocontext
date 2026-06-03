@@ -7,7 +7,7 @@ use rdkafka::{ClientConfig, Message, Timestamp};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Mensaje genérico de Kafka sin conocimiento de dominio
 /// Esta estructura es parte de la capa de infraestructura pura
@@ -15,7 +15,9 @@ use tracing::{debug, error, info, warn};
 pub struct KafkaMessage {
     pub payload: Vec<u8>,
     pub key: Option<Vec<u8>>,
+    #[allow(dead_code)]
     pub headers: HashMap<String, Vec<u8>>,
+    #[allow(dead_code)]
     pub topic: String,
     pub partition: i32,
     pub offset: i64,
@@ -36,38 +38,8 @@ impl KafkaMessage {
     }
 }
 
-/// Handle para commit de offset
-/// Permite que la capa superior controle cuándo hacer commit
-pub struct CommitHandle<'a> {
-    consumer: &'a StreamConsumer,
-    partition: i32,
-    offset: i64,
-}
-
-impl<'a> CommitHandle<'a> {
-    pub async fn commit(&self) -> Result<()> {
-        use rdkafka::TopicPartitionList;
-
-        let mut tpl = TopicPartitionList::new();
-        tpl.add_partition_offset("", self.partition, rdkafka::Offset::Offset(self.offset + 1))?;
-
-        self.consumer
-            .commit(&tpl, rdkafka::consumer::CommitMode::Async)
-            .context("Failed to commit offset")?;
-
-        debug!(
-            partition = self.partition,
-            offset = self.offset,
-            "Offset committed"
-        );
-
-        Ok(())
-    }
-}
-
 pub struct KafkaConsumer {
     consumer: StreamConsumer,
-    topic: String,
     circuit_breaker: Arc<CircuitBreaker>,
 }
 
@@ -96,19 +68,21 @@ impl KafkaConsumer {
             .create()
             .context("Failed to create Kafka consumer")?;
 
+        let topic_refs = config.input_topics();
+        let topics: Vec<String> = topic_refs.iter().map(|t| (*t).to_string()).collect();
+
         consumer
-            .subscribe(&[&config.input_topic])
+            .subscribe(&topic_refs)
             .context("Failed to subscribe to topic")?;
 
         info!(
-            topic = %config.input_topic,
+            topics = ?topics,
             group_id = %config.group_id,
             "Kafka consumer initialized and subscribed"
         );
 
         Ok(Self {
             consumer,
-            topic: config.input_topic.clone(),
             circuit_breaker,
         })
     }
@@ -123,7 +97,7 @@ impl KafkaConsumer {
         match tokio::time::timeout(Duration::from_secs(5), self.consumer.recv()).await {
             Ok(Ok(msg)) => {
                 debug!(
-                    topic = %self.topic,
+                    topic = msg.topic(),
                     partition = msg.partition(),
                     offset = msg.offset(),
                     "Message received"
@@ -139,7 +113,7 @@ impl KafkaConsumer {
                 Err(anyhow::anyhow!("Kafka consumer error: {}", e))
             }
             Err(_) => {
-                debug!("No message received within timeout");
+                trace!("No message received within timeout");
                 Ok(None)
             }
         }
@@ -179,17 +153,22 @@ impl KafkaConsumer {
     }
 
     /// Commit directo de un mensaje recibido
-    pub async fn commit_offset(&self, partition: i32, offset: i64) -> Result<()> {
+    pub async fn commit_offset(&self, topic: &str, partition: i32, offset: i64) -> Result<()> {
         use rdkafka::TopicPartitionList;
 
         let mut tpl = TopicPartitionList::new();
-        tpl.add_partition_offset(&self.topic, partition, rdkafka::Offset::Offset(offset + 1))?;
+        tpl.add_partition_offset(topic, partition, rdkafka::Offset::Offset(offset + 1))?;
 
         self.consumer
             .commit(&tpl, rdkafka::consumer::CommitMode::Async)
             .context("Failed to commit offset")?;
 
-        debug!(partition = partition, offset = offset, "Offset committed");
+        debug!(
+            topic = topic,
+            partition = partition,
+            offset = offset,
+            "Offset committed"
+        );
 
         Ok(())
     }
@@ -210,8 +189,9 @@ mod tests {
             username: "user".to_string(),
             password: "pass".to_string(),
             security_protocol: "SASL_PLAINTEXT".to_string(),
-            input_topic: "test-input".to_string(),
-            output_topic: "test-output".to_string(),
+            input_topic_siscom: "test-input-siscom".to_string(),
+            input_topic_mobility: "test-input-mobility".to_string(),
+            output_topic_entity_position: "test-output".to_string(),
             consumer: crate::config::ConsumerConfig {
                 fetch_min_bytes: "1024".to_string(),
                 fetch_wait_max_ms: "100".to_string(),
@@ -228,7 +208,8 @@ mod tests {
             },
         };
 
-        assert_eq!(config.input_topic, "test-input");
+        assert_eq!(config.input_topic_siscom, "test-input-siscom");
+        assert_eq!(config.input_topic_mobility, "test-input-mobility");
         assert_eq!(config.consumer.enable_auto_commit, "false");
     }
 }

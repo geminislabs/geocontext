@@ -1,3 +1,3 @@
 pub mod consumer;
 
-pub use consumer::{InputConsumer, MessageContext};
+pub use consumer::InputConsumer;

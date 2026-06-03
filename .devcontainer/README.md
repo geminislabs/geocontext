@@ -27,7 +27,7 @@ Configuración de Development Container para el microservicio GeoContext en Rust
 1. Abrir VS Code en la carpeta del proyecto
 2. Presionar `F1` o `Cmd+Shift+P`
 3. Seleccionar: **"Dev Containers: Reopen in Container"**
-4. Esperar a que se construya la imagen y compile el proyecto
+4. Esperar a que se construya la imagen y se compile el proyecto
 
 ### Primera vez
 
@@ -74,12 +74,22 @@ cargo build --release
 Las variables se cargan automáticamente desde `.env`:
 - Kafka brokers, topics, credenciales
 - Circuit breaker config
-- H3 resolution
+- H3 geoespacial (`h3_10`, derivadas `h3_9`→`h3_7`, y `h3_10_ring_1`)
 - Logging level
+
+### Hooks Locales (Recomendado)
+
+Para habilitar validaciones automáticas antes de push desde tu clon local:
+
+```bash
+make hooks-install
+```
+
+El hook `pre-push` valida formato con `cargo fmt --all -- --check` y, si detecta push de tags, ejecuta también `cargo clippy --all-targets --all-features -- -D warnings`.
 
 Para modificar configuración:
 1. Editar `.env` en el workspace
-2. Recargar variables: `source .env` (si es necesario)
+2. Recargar variables con: `source .env` (si es necesario)
 3. Reiniciar la aplicación
 
 ### Red Docker

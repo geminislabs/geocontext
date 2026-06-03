@@ -1,7 +1,7 @@
 use crate::circuit_breaker::CircuitBreaker;
 use crate::config::KafkaConfig;
 use anyhow::{Context, Result};
-use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
+use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,11 +32,6 @@ impl<'a> ProduceRequest<'a> {
 
     pub fn with_string_key(self, key: &'a str) -> Self {
         self.with_key(key.as_bytes())
-    }
-
-    pub fn with_headers(mut self, headers: Vec<(&'a str, &'a [u8])>) -> Self {
-        self.headers = Some(headers);
-        self
     }
 }
 
@@ -100,14 +95,12 @@ impl KafkaProducer {
 
         if let Some(headers) = request.headers {
             for (key, value) in headers {
-                record = record.headers(
-                    rdkafka::message::OwnedHeaders::new().insert(
-                        rdkafka::message::Header {
-                            key,
-                            value: Some(value),
-                        }
-                    )
-                );
+                record = record.headers(rdkafka::message::OwnedHeaders::new().insert(
+                    rdkafka::message::Header {
+                        key,
+                        value: Some(value),
+                    },
+                ));
             }
         }
 
@@ -129,18 +122,12 @@ impl KafkaProducer {
                     "Failed to send message to Kafka"
                 );
                 self.circuit_breaker.record_failure();
-                Err(anyhow::anyhow!("Failed to produce message: {}", kafka_error))
+                Err(anyhow::anyhow!(
+                    "Failed to produce message: {}",
+                    kafka_error
+                ))
             }
         }
-    }
-
-    pub async fn flush(&self) -> Result<()> {
-        self.producer
-            .flush(Duration::from_secs(10))
-            .context("Failed to flush producer")?;
-        
-        debug!("Producer flushed");
-        Ok(())
     }
 }
 
@@ -151,9 +138,8 @@ mod tests {
     #[test]
     fn test_produce_request_builder() {
         let payload = b"test payload";
-        let request = ProduceRequest::new("test-topic", payload)
-            .with_string_key("key-123");
-        
+        let request = ProduceRequest::new("test-topic", payload).with_string_key("key-123");
+
         assert_eq!(request.topic, "test-topic");
         assert_eq!(request.key, Some(b"key-123" as &[u8]));
         assert_eq!(request.payload, payload);

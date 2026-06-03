@@ -7,7 +7,7 @@ pub struct Config {
     pub kafka: KafkaConfig,
     pub circuit_breaker: CircuitBreakerConfig,
     pub commit_on_produce_success: bool,
-    pub h3_resolution: u8,
+    pub health_bind_addr: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -18,8 +18,9 @@ pub struct KafkaConfig {
     pub username: String,
     pub password: String,
     pub security_protocol: String,
-    pub input_topic: String,
-    pub output_topic: String,
+    pub input_topic_siscom: String,
+    pub input_topic_mobility: String,
+    pub output_topic_entity_position: String,
     pub consumer: ConsumerConfig,
     pub producer: ProducerConfig,
 }
@@ -59,8 +60,9 @@ impl Config {
             username: get_env("KAFKA_USERNAME")?,
             password: get_env("KAFKA_PASSWORD")?,
             security_protocol: get_env("KAFKA_SECURITY_PROTOCOL")?,
-            input_topic: get_env("KAFKA_INPUT_TOPIC")?,
-            output_topic: get_env("KAFKA_OUTPUT_TOPIC")?,
+            input_topic_siscom: get_env("KAFKA_INPUT_TOPIC_SISCOM")?,
+            input_topic_mobility: get_env("KAFKA_INPUT_TOPIC_MOBILITY")?,
+            output_topic_entity_position: get_env("KAFKA_OUTPUT_TOPIC_ENTITY_POSITION")?,
             consumer: ConsumerConfig {
                 fetch_min_bytes: get_env("KAFKA_CONSUMER_FETCH_MIN_BYTES")?,
                 fetch_wait_max_ms: get_env("KAFKA_CONSUMER_FETCH_WAIT_MAX_MS")?,
@@ -90,16 +92,13 @@ impl Config {
             .parse()
             .context("Invalid COMMIT_ON_PRODUCE_SUCCESS")?;
 
-        let h3_resolution = get_env("H3_RESOLUTION")
-            .unwrap_or_else(|_| "10".to_string())
-            .parse()
-            .context("Invalid H3_RESOLUTION")?;
+        let health_bind_addr = get_env_or_default("HEALTH_BIND_ADDR", "0.0.0.0:8080");
 
         Ok(Self {
             kafka,
             circuit_breaker,
             commit_on_produce_success,
-            h3_resolution,
+            health_bind_addr,
         })
     }
 
@@ -108,6 +107,19 @@ impl Config {
     }
 }
 
+impl KafkaConfig {
+    pub fn input_topics(&self) -> Vec<&str> {
+        vec![
+            self.input_topic_siscom.as_str(),
+            self.input_topic_mobility.as_str(),
+        ]
+    }
+}
+
 fn get_env(key: &str) -> Result<String> {
     std::env::var(key).with_context(|| format!("Missing environment variable: {}", key))
+}
+
+fn get_env_or_default(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
 }

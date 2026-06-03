@@ -1,4 +1,4 @@
-use crate::domain::SiscomMinimalEvent;
+use crate::domain::InboundEvent;
 use crate::kafka::{KafkaConsumer, KafkaMessage};
 use anyhow::{Context, Result};
 use tracing::{debug, error};
@@ -14,8 +14,8 @@ impl InputConsumer {
         Self { kafka_consumer }
     }
 
-    /// Recibe un mensaje de Kafka y lo convierte a evento de dominio
-    pub async fn receive_event(&self) -> Result<Option<(SiscomMinimalEvent, MessageContext)>> {
+    /// Recibe un mensaje de Kafka y lo convierte a evento de dominio genérico
+    pub async fn receive_event(&self) -> Result<Option<(InboundEvent, MessageContext)>> {
         let kafka_msg = match self.kafka_consumer.receive_message().await? {
             Some(msg) => msg,
             None => return Ok(None),
@@ -39,25 +39,29 @@ impl InputConsumer {
     }
 
     /// Parsea el mensaje de Kafka a evento de dominio
-    fn parse_to_domain_event(&self, msg: &KafkaMessage) -> Result<SiscomMinimalEvent> {
-        let payload_str = msg.payload_as_string()
+    fn parse_to_domain_event(&self, msg: &KafkaMessage) -> Result<InboundEvent> {
+        let payload_str = msg
+            .payload_as_string()
             .context("Failed to convert payload to UTF-8")?;
 
+        let payload_json: serde_json::Value =
+            serde_json::from_str(&payload_str).context("Failed to deserialize JSON payload")?;
+
         debug!(
+            topic = %msg.topic,
             partition = msg.partition,
             offset = msg.offset,
             payload_len = payload_str.len(),
             "Parsing message to domain event"
         );
 
-        SiscomMinimalEvent::from_json(&payload_str)
-            .context("Failed to deserialize JSON to SiscomMinimalEvent")
+        Ok(InboundEvent::new(msg.topic.clone(), payload_json))
     }
 
     /// Permite hacer commit del offset
     pub async fn commit_offset(&self, context: &MessageContext) -> Result<()> {
         self.kafka_consumer
-            .commit_offset(context.partition, context.offset)
+            .commit_offset(&context.topic, context.partition, context.offset)
             .await
     }
 }
@@ -66,8 +70,10 @@ impl InputConsumer {
 /// Mantiene la información de Kafka sin exponer rdkafka fuera de la capa de adaptadores
 #[derive(Debug, Clone)]
 pub struct MessageContext {
+    pub topic: String,
     pub partition: i32,
     pub offset: i64,
+    #[allow(dead_code)]
     pub timestamp: Option<i64>,
     pub key: Option<String>,
 }
@@ -75,6 +81,7 @@ pub struct MessageContext {
 impl MessageContext {
     fn from_kafka_message(msg: &KafkaMessage) -> Self {
         Self {
+            topic: msg.topic.clone(),
             partition: msg.partition,
             offset: msg.offset,
             timestamp: msg.timestamp,
@@ -90,7 +97,7 @@ mod tests {
     #[test]
     fn test_message_context_creation() {
         use std::collections::HashMap;
-        
+
         let kafka_msg = KafkaMessage {
             payload: b"test".to_vec(),
             key: Some(b"key".to_vec()),
@@ -102,6 +109,7 @@ mod tests {
         };
 
         let context = MessageContext::from_kafka_message(&kafka_msg);
+        assert_eq!(context.topic, "test");
         assert_eq!(context.partition, 0);
         assert_eq!(context.offset, 123);
         assert_eq!(context.key, Some("key".to_string()));

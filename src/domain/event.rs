@@ -1,35 +1,35 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Evento de dominio: Mensaje mínimo de SISCOM
-/// Esta es la representación de negocio, no de infraestructura
+/// Evento de entrada genérico ya desacoplado de Kafka.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SiscomMinimalEvent {
+pub struct InboundEvent {
+    pub topic: String,
+
     #[serde(flatten)]
     pub data: Value,
 }
 
-/// Evento de dominio: Mensaje enriquecido con contexto geográfico
+/// Mensaje canónico de salida para entity-position-updates.
+/// Todos los campos son opcionales y se serializan como null cuando faltan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SiscomEnrichedEvent {
-    #[serde(flatten)]
-    pub original: Value,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub geo_context: Option<GeoContext>,
-}
-
-/// Contexto geográfico agregado al evento
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeoContext {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub h3: Option<H3Context>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
+pub struct EntityPositionUpdate {
+    pub source: Option<String>,
+    pub device_id: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub recorded_at: Option<String>,
+    pub received_at: Option<String>,
+    pub accuracy_m: Option<f64>,
+    pub speed_mps: Option<f64>,
+    pub heading: Option<f64>,
+    pub altitude_m: Option<f64>,
+    pub battery_level: Option<f64>,
+    pub h3_10: Option<String>,
+    pub h3_10_ring_1: Option<Vec<String>>,
+    pub h3_9: Option<String>,
+    pub h3_8: Option<String>,
+    pub h3_7: Option<String>,
 }
 
 /// Contexto H3 - Índice geoespacial
@@ -54,29 +54,16 @@ impl H3Context {
     }
 }
 
-impl SiscomMinimalEvent {
-    pub fn new(data: Value) -> Self {
-        Self { data }
-    }
-
-    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+impl InboundEvent {
+    pub fn new(topic: impl Into<String>, data: Value) -> Self {
+        Self {
+            topic: topic.into(),
+            data,
+        }
     }
 }
 
-impl SiscomEnrichedEvent {
-    pub fn from_minimal(event: SiscomMinimalEvent) -> Self {
-        Self {
-            original: event.data,
-            geo_context: None,
-        }
-    }
-
-    pub fn with_geo_context(mut self, context: GeoContext) -> Self {
-        self.geo_context = Some(context);
-        self
-    }
-
+impl EntityPositionUpdate {
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self)
     }
@@ -87,19 +74,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_minimal_event_creation() {
-        let json = r#"{"id": 123, "lat": 19.4326, "lon": -99.1332}"#;
-        let event = SiscomMinimalEvent::from_json(json).unwrap();
+    fn test_inbound_event_creation() {
+        let event = InboundEvent::new("mobility-locations-raw", serde_json::json!({"id": 123}));
+        assert_eq!(event.topic, "mobility-locations-raw");
         assert!(event.data.get("id").is_some());
     }
 
     #[test]
-    fn test_enriched_event_creation() {
-        let json = r#"{"id": 456}"#;
-        let minimal = SiscomMinimalEvent::from_json(json).unwrap();
-        let enriched = SiscomEnrichedEvent::from_minimal(minimal);
+    fn test_entity_position_serialization_with_nulls() {
+        let event = EntityPositionUpdate {
+            source: Some("gps".to_string()),
+            device_id: None,
+            lat: None,
+            lon: None,
+            recorded_at: None,
+            received_at: None,
+            accuracy_m: None,
+            speed_mps: None,
+            heading: None,
+            altitude_m: None,
+            battery_level: None,
+            h3_10: None,
+            h3_10_ring_1: None,
+            h3_9: None,
+            h3_8: None,
+            h3_7: None,
+        };
 
-        assert!(enriched.geo_context.is_none());
-        assert_eq!(enriched.original.get("id").unwrap(), 456);
+        let json = event.to_json().unwrap();
+        assert!(json.contains("\"source\":\"gps\""));
+        assert!(json.contains("\"device_id\":null"));
     }
 }

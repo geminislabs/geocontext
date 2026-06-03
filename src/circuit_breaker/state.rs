@@ -5,10 +5,10 @@ use std::fmt;
 pub enum State {
     /// Circuito cerrado: operaciones permitidas normalmente
     Closed,
-    
+
     /// Circuito abierto: operaciones bloqueadas, sistema en recuperación
     Open,
-    
+
     /// Circuito semi-abierto: probando si el sistema se recuperó
     HalfOpen,
 }
@@ -77,9 +77,9 @@ mod tests {
         state.state = State::Open;
         state.failure_count = 10;
         state.last_failure_time = Some(std::time::Instant::now());
-        
+
         state.reset();
-        
+
         assert_eq!(state.state, State::Closed);
         assert_eq!(state.failure_count, 0);
         assert!(state.last_failure_time.is_none());

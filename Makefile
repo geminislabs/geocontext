@@ -1,4 +1,4 @@
-.PHONY: help build run test clean fmt lint check docker-up docker-down network
+.PHONY: help build run test clean fmt lint check docker-up docker-down network hooks-install hooks-uninstall
 
 # Colores para output
 GREEN  := \033[0;32m
@@ -134,3 +134,13 @@ install: ## Instalar el binario en el sistema
 
 ci: fmt-check lint test ## Simular pipeline de CI
 	@echo "$(GREEN)✅ CI checks passed!$(NC)"
+
+hooks-install: ## Configurar hooks locales del repositorio (.githooks)
+	@echo "$(GREEN)Configurando git hooks path en .githooks...$(NC)"
+	git config core.hooksPath .githooks
+	@echo "$(GREEN)✅ Hook pre-push habilitado$(NC)"
+
+hooks-uninstall: ## Restaurar hooks por defecto de Git
+	@echo "$(GREEN)Restaurando hooks por defecto...$(NC)"
+	git config --unset core.hooksPath || true
+	@echo "$(GREEN)✅ Hook path restaurado$(NC)"

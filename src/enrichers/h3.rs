@@ -1,5 +1,6 @@
 use crate::domain::H3Context;
 use h3o::{CellIndex, LatLng, Resolution};
+use std::str::FromStr;
 
 /// Enriquece con índice H3 a partir de coordenadas lat/lon
 ///
@@ -15,22 +16,36 @@ use h3o::{CellIndex, LatLng, Resolution};
 /// # Retorna
 /// - `Some(H3Context)` si las coordenadas son válidas
 /// - `None` si las coordenadas son inválidas o la conversión falla
-pub fn enrich_with_h3(lat: f64, lon: f64, _resolution: u8) -> Option<H3Context> {
+pub fn enrich_with_h3(lat: f64, lon: f64) -> Option<H3Context> {
     // Validar rangos de coordenadas
     if !is_valid_latitude(lat) || !is_valid_longitude(lon) {
         return None;
     }
 
     // Resolución base fija para r10
-    let h3_resolution = Resolution::try_from(10).ok()?;
+    let base_resolution = Resolution::try_from(10).ok()?;
 
     // Crear coordenadas H3
     let latlng = LatLng::new(lat, lon).ok()?;
 
     // Calcular índice H3 r10
-    let cell_r10: CellIndex = latlng.to_cell(h3_resolution);
+    let cell_r10: CellIndex = latlng.to_cell(base_resolution);
 
     build_h3_context(cell_r10)
+}
+
+/// Calcula los vecinos ring-1 de una celda H3 en formato string.
+/// Excluye la celda central del resultado.
+pub fn h3_10_ring_1(h3_10: &str) -> Option<Vec<String>> {
+    let center = CellIndex::from_str(h3_10).ok()?;
+    let neighbors = center
+        .grid_disk::<Vec<_>>(1)
+        .into_iter()
+        .filter(|index| *index != center)
+        .map(|index| index.to_string())
+        .collect::<Vec<_>>();
+
+    Some(neighbors)
 }
 
 fn build_h3_context(cell_r10: CellIndex) -> Option<H3Context> {
@@ -51,13 +66,13 @@ fn build_h3_context(cell_r10: CellIndex) -> Option<H3Context> {
 /// Valida que la latitud esté en el rango válido
 #[inline]
 fn is_valid_latitude(lat: f64) -> bool {
-    lat >= -90.0 && lat <= 90.0 && lat.is_finite()
+    (-90.0..=90.0).contains(&lat) && lat.is_finite()
 }
 
 /// Valida que la longitud esté en el rango válido
 #[inline]
 fn is_valid_longitude(lon: f64) -> bool {
-    lon >= -180.0 && lon <= 180.0 && lon.is_finite()
+    (-180.0..=180.0).contains(&lon) && lon.is_finite()
 }
 
 #[cfg(test)]
@@ -67,7 +82,7 @@ mod tests {
     #[test]
     fn test_enrich_with_h3_valid_coordinates() {
         // Ciudad de México
-        let result = enrich_with_h3(19.4326, -99.1332, 10);
+        let result = enrich_with_h3(19.4326, -99.1332);
         assert!(result.is_some());
 
         let h3_ctx = result.unwrap();
@@ -84,7 +99,7 @@ mod tests {
         let lat = 19.4326;
         let lon = -99.1332;
 
-        let h3_ctx = enrich_with_h3(lat, lon, 10).unwrap();
+        let h3_ctx = enrich_with_h3(lat, lon).unwrap();
         assert_ne!(h3_ctx.r10, h3_ctx.r9);
         assert_ne!(h3_ctx.r9, h3_ctx.r8);
         assert_ne!(h3_ctx.r8, h3_ctx.r7);
@@ -94,47 +109,47 @@ mod tests {
     #[test]
     fn test_enrich_with_h3_invalid_latitude() {
         // Latitud fuera de rango
-        assert!(enrich_with_h3(91.0, -99.1332, 10).is_none());
-        assert!(enrich_with_h3(-91.0, -99.1332, 10).is_none());
+        assert!(enrich_with_h3(91.0, -99.1332).is_none());
+        assert!(enrich_with_h3(-91.0, -99.1332).is_none());
 
         // Latitud infinita
-        assert!(enrich_with_h3(f64::INFINITY, -99.1332, 10).is_none());
-        assert!(enrich_with_h3(f64::NEG_INFINITY, -99.1332, 10).is_none());
+        assert!(enrich_with_h3(f64::INFINITY, -99.1332).is_none());
+        assert!(enrich_with_h3(f64::NEG_INFINITY, -99.1332).is_none());
 
         // NaN
-        assert!(enrich_with_h3(f64::NAN, -99.1332, 10).is_none());
+        assert!(enrich_with_h3(f64::NAN, -99.1332).is_none());
     }
 
     #[test]
     fn test_enrich_with_h3_invalid_longitude() {
         // Longitud fuera de rango
-        assert!(enrich_with_h3(19.4326, 181.0, 10).is_none());
-        assert!(enrich_with_h3(19.4326, -181.0, 10).is_none());
+        assert!(enrich_with_h3(19.4326, 181.0).is_none());
+        assert!(enrich_with_h3(19.4326, -181.0).is_none());
 
         // Longitud infinita
-        assert!(enrich_with_h3(19.4326, f64::INFINITY, 10).is_none());
-        assert!(enrich_with_h3(19.4326, f64::NEG_INFINITY, 10).is_none());
+        assert!(enrich_with_h3(19.4326, f64::INFINITY).is_none());
+        assert!(enrich_with_h3(19.4326, f64::NEG_INFINITY).is_none());
 
         // NaN
-        assert!(enrich_with_h3(19.4326, f64::NAN, 10).is_none());
+        assert!(enrich_with_h3(19.4326, f64::NAN).is_none());
     }
 
     #[test]
     fn test_enrich_with_h3_edge_cases() {
         // Coordenadas en los límites
-        assert!(enrich_with_h3(90.0, 180.0, 10).is_some());
-        assert!(enrich_with_h3(-90.0, -180.0, 10).is_some());
-        assert!(enrich_with_h3(0.0, 0.0, 10).is_some());
+        assert!(enrich_with_h3(90.0, 180.0).is_some());
+        assert!(enrich_with_h3(-90.0, -180.0).is_some());
+        assert!(enrich_with_h3(0.0, 0.0).is_some());
     }
 
     #[test]
     fn test_enrich_with_h3_known_locations() {
         // Guadalajara, México
-        let gdl = enrich_with_h3(20.6597, -103.3496, 10);
+        let gdl = enrich_with_h3(20.6597, -103.3496);
         assert!(gdl.is_some());
 
         // Monterrey, México
-        let mty = enrich_with_h3(25.6866, -100.3161, 10);
+        let mty = enrich_with_h3(25.6866, -100.3161);
         assert!(mty.is_some());
 
         // Los índices deben ser diferentes
@@ -167,5 +182,12 @@ mod tests {
         assert!(!is_valid_longitude(-180.1));
         assert!(!is_valid_longitude(f64::INFINITY));
         assert!(!is_valid_longitude(f64::NAN));
+    }
+
+    #[test]
+    fn test_h3_10_ring_1_neighbors() {
+        let ring = h3_10_ring_1("8a4983ca610ffff").unwrap();
+        assert!(!ring.is_empty());
+        assert!(ring.iter().all(|idx| idx != "8a4983ca610ffff"));
     }
 }

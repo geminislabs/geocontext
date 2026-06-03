@@ -2,11 +2,12 @@ mod circuit_breaker;
 mod config;
 mod domain;
 mod enrichers;
+mod health;
 mod input;
 mod kafka;
-mod models;
 mod output;
 mod pipeline;
+mod startup;
 
 use anyhow::Result;
 use circuit_breaker::{CircuitBreaker, Config as BreakerConfig};
@@ -22,11 +23,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
+    startup::print_logo();
 
     info!("Starting geocontext microservice with hexagonal architecture");
 
     let config = Config::from_env()?;
     info!("Configuration loaded successfully");
+
+    health::spawn_health_server(config.health_bind_addr.clone());
 
     // Capa de infraestructura: Kafka consumer y producer
     let consumer_cb = Arc::new(CircuitBreaker::new(
@@ -52,15 +56,19 @@ async fn main() -> Result<()> {
     // Capa de adaptadores: Input y Output
     info!("Initializing adapter layer (Input/Output)");
     let input = InputConsumer::new(kafka_consumer);
-    let output = OutputProducer::new(kafka_producer, config.kafka.output_topic.clone());
+    let output = OutputProducer::new(
+        kafka_producer,
+        config.kafka.output_topic_entity_position.clone(),
+    );
 
     // Capa de aplicación: Pipeline processor
     info!("Initializing application layer (Pipeline)");
     let processor = Processor::new(
-        input, 
-        output, 
+        input,
+        output,
         config.commit_on_produce_success,
-        config.h3_resolution,
+        config.kafka.input_topic_siscom.clone(),
+        config.kafka.input_topic_mobility.clone(),
     );
 
     info!("All layers initialized, starting processing loop");
