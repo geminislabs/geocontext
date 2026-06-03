@@ -40,12 +40,3 @@ mod breaker;
 mod state;
 
 pub use breaker::{CircuitBreaker, Config};
-pub use state::State;
-
-// Re-exportar tipos antiguos para compatibilidad
-// DEPRECATED: Usar Config en lugar de CircuitBreakerConfig
-#[deprecated(since = "0.2.0", note = "Use Config instead")]
-pub type CircuitBreakerConfig = Config;
-
-#[deprecated(since = "0.2.0", note = "Use State instead")]
-pub type CircuitState = State;

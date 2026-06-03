@@ -1,3 +1,3 @@
 pub mod producer;
 
-pub use producer::{OutputProducer, PublishResult};
+pub use producer::OutputProducer;

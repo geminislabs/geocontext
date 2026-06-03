@@ -1,3 +1,3 @@
 pub mod event;
 
-pub use event::{GeoContext, H3Context, SiscomEnrichedEvent, SiscomMinimalEvent};
+pub use event::{EntityPositionUpdate, H3Context, InboundEvent};

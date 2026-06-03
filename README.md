@@ -89,9 +89,12 @@ cargo run --release
 #### Kafka Broker
 - `KAFKA_BROKERS`: Lista de brokers (ej: `localhost:9092`)
 - `KAFKA_GROUP_ID`: ID del consumer group
+- `KAFKA_SASL_MECHANISM`: Mecanismo SASL (ej: `PLAIN`)
+- `KAFKA_SECURITY_PROTOCOL`: Protocolo de seguridad (ej: `SASL_SSL`)
 - `KAFKA_USERNAME` / `KAFKA_PASSWORD`: Credenciales SASL
-- `KAFKA_INPUT_TOPIC`: Topic de entrada (`siscom-minimal`)
-- `KAFKA_OUTPUT_TOPIC`: Topic de salida (`siscom-geocontext`)
+- `KAFKA_INPUT_TOPIC_SISCOM`: Topic de entrada SISCOM
+- `KAFKA_INPUT_TOPIC_MOBILITY`: Topic de entrada Mobility
+- `KAFKA_OUTPUT_TOPIC_ENTITY_POSITION`: Topic canónico de salida
 
 #### Consumer Tuning
 - `KAFKA_CONSUMER_FETCH_MIN_BYTES`: Bytes mínimos por fetch (default: 1024)
@@ -116,13 +119,23 @@ cargo run --release
 - `CB_RESET_TIMEOUT_MS`: Tiempo antes de intentar cerrar el circuito (default: 30000ms)
 
 #### H3 Geospatial
-- `H3_RESOLUTION`: Legacy (se conserva por compatibilidad, no afecta el cálculo actual)
-- El servicio genera `r10` (resolución 10) y deriva `r9` → `r6` usando la jerarquía H3
+- El servicio genera `r10` (resolución 10) como base H3
+  - En el mensaje canónico se publican `h3_10`, `h3_9`, `h3_8` y `h3_7`
+  - El enricher también puede derivar niveles adicionales de la jerarquía internamente
   - **10**: Barrio/colonia (~0.015 km²) ← Base fija (r10)
   - **9**: Zona urbana (~0.10 km²)
   - **8**: Ciudad/municipio (~0.74 km²)
   - **7**: Región (~5.1 km²)
   - **6**: Región amplia (~36 km²)
+- También genera `h3_10_ring_1` (vecinos inmediatos de `h3_10`)
+  - Semántica esperada: `gridRing(h3_10, 1)`
+  - Implementación normalizada: `gridDisk(h3_10, 1)` excluyendo la celda central
+  - Resultado: vecinos mínimos sin duplicar `h3_10`, listos para consumo por otras entidades
+
+**`gridRing` vs `gridDisk`**
+- `gridRing(h, 1)`: retorna solo la corona de distancia 1 alrededor de `h` (sin incluir `h`).
+- `gridDisk(h, 1)`: retorna `h` + vecinos a distancia <= 1.
+- Decisión en este servicio: usar `gridDisk(h3_10, 1)` y filtrar el centro para obtener el mismo conjunto útil de vecinos de primer nivel, evitar repetición de datos y dejar el campo `h3_10_ring_1` en un formato canónico.
 
 ## 🏃 Ejecución
 
@@ -171,10 +184,10 @@ cargo build --release
             │
 ┌───────────▼───────────────────────────────────────────────────┐
 │                      DOMAIN LAYER                             │
-│  ┌─────────────────┐  ┌──────────────┐  ┌─────────────────┐  │
-│  │ SiscomMinimal   │  │ GeoContext   │  │ SiscomEnriched  │  │
-│  │ Event           │  │ - H3Context  │  │ Event           │  │
-│  └─────────────────┘  └──────────────┘  └─────────────────┘  │
+│  ┌─────────────────┐                   ┌───────────────────┐  │
+│  │ InboundEvent    │                   │ EntityPosition    │  │
+│  │ (topic + data)  │                   │ Update (canónico) │  │
+│  └─────────────────┘                   └───────────────────┘  │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -193,87 +206,57 @@ cargo build --release
 - **Processor**: Orquesta el flujo: input → enrich → output
 
 #### Domain
-- **event**: Modelos de negocio (`SiscomMinimalEvent`, `SiscomEnrichedEvent`, `GeoContext`, `H3Context`)
+- **event**: Modelos de negocio (`InboundEvent`, `EntityPositionUpdate`, `H3Context`)
 - **enrichers**: Lógica pura de enriquecimiento (sin efectos secundarios)
   - **h3**: Cálculo de índices H3 desde coordenadas
 
 ## 🔄 Flujo de Procesamiento
 
-1. **Recepción**: `KafkaConsumer` recibe mensaje de `siscom-minimal` como bytes
+1. **Recepción**: `KafkaConsumer` recibe mensaje desde los topics configurados (`KAFKA_INPUT_TOPIC_SISCOM`, `KAFKA_INPUT_TOPIC_MOBILITY`)
 2. **Circuit Breaker**: Verifica si el consumer está disponible
-3. **Adaptación Input**: `InputConsumer` deserializa JSON a `SiscomMinimalEvent`
+3. **Adaptación Input**: `InputConsumer` deserializa JSON a `InboundEvent`
 4. **Extracción**: Pipeline extrae coordenadas lat/lon del evento
-5. **Enriquecimiento**: 
-   - Valida coordenadas (rango, finitas)
-   - Calcula índice H3 con resolución configurada
-   - Construye `GeoContext` con `H3Context`
-6. **Construcción**: Crea `SiscomEnrichedEvent` preservando campos originales
+5. **Normalización + Enriquecimiento**:
+  - Mapea el payload de origen al esquema canónico `EntityPositionUpdate`
+  - Valida coordenadas (rango y valores finitos)
+  - Calcula H3 base en `r10` y deriva `r9` → `r7`
+  - Calcula `h3_10_ring_1` como vecinos de primer anillo
+6. **Construcción**: Completa `EntityPositionUpdate` con campos canónicos
 7. **Adaptación Output**: `OutputProducer` serializa a JSON
-8. **Producción**: `KafkaProducer` envía mensaje enriquecido a `siscom-geocontext`
+8. **Producción**: `KafkaProducer` envía al topic `KAFKA_OUTPUT_TOPIC_ENTITY_POSITION`
 9. **Commit Condicional**:
    - Si `COMMIT_ON_PRODUCE_SUCCESS=true`: Commit solo si la producción fue exitosa
    - Si `COMMIT_ON_PRODUCE_SUCCESS=false`: Commit después del procesamiento
 
 ### Ejemplo de Transformación
 
-**Input** (`siscom-minimal`):
+**Input** (`KAFKA_INPUT_TOPIC_SISCOM` o `KAFKA_INPUT_TOPIC_MOBILITY`):
 ```json
 {
-  "backup_batery_voltage": "0.0",
-  "cell_id": "03675103",
-  "course": "0.00",
-  "engine_status": "OFF",
-  "fix_status": "1",
-  "gps_datetime": "2024-04-09 16:22:26",
-  "gps_epoch": 1712679746,
+  "uuid": "ce69b8ac-4c55-5db8-a8b2-5b739b6b078e",
   "latitude": "+20.574605",
   "longitude": "-100.359826",
-  "main_battery_voltage": "11.43",
-  "mcc": "334",
-  "mnc": "20",
-  "msg_class": "STATUS",
-  "network_status": "SERVER DISCONNECTED",
-  "odometer": "730327",
-  "received_at": 1770444644983,
-  "rx_lvl": "33",
-  "speed": "0.00",
-  "stellites": "15",
-  "uuid": "ce69b8ac-4c55-5db8-a8b2-5b739b6b078e"
+  "speed": "36.0",
+  "gps_datetime": "2024-04-09 16:22:26",
+  "received_at": 1770444644983
 }
 ```
 
-**Output** (`siscom-geocontext`):
+**Output** (`KAFKA_OUTPUT_TOPIC_ENTITY_POSITION`):
 ```json
 {
-  "backup_batery_voltage": "0.0",
-  "cell_id": "03675103",
-  "course": "0.00",
-  "engine_status": "OFF",
-  "fix_status": "1",
-  "gps_datetime": "2024-04-09 16:22:26",
-  "gps_epoch": 1712679746,
-  "latitude": "+20.574605",
-  "longitude": "-100.359826",
-  "main_battery_voltage": "11.43",
-  "mcc": "334",
-  "mnc": "20",
-  "msg_class": "STATUS",
-  "network_status": "SERVER DISCONNECTED",
-  "odometer": "730327",
-  "received_at": 1770444644983,
-  "rx_lvl": "33",
-  "speed": "0.00",
-  "stellites": "15",
-  "uuid": "ce69b8ac-4c55-5db8-a8b2-5b739b6b078e",
-  "geo_context": {
-    "h3": {
-      "r10": "8a4983d9b907fff",
-      "r9": "894983d9b93ffff",
-      "r8": "884983d9b9fffff",
-      "r7": "874983d9bffffff",
-      "r6": "864983d9fffffff"
-    }
-  }
+  "source": "gps",
+  "device_id": "ce69b8ac-4c55-5db8-a8b2-5b739b6b078e",
+  "lat": 20.574605,
+  "lon": -100.359826,
+  "recorded_at": "2024-04-09 16:22:26",
+  "received_at": "1770444644983",
+  "speed_mps": 10.0,
+  "h3_10": "8a4983d9b907fff",
+  "h3_10_ring_1": ["8a4983d9b90ffff", "8a4983d9b917fff"],
+  "h3_9": "894983d9b93ffff",
+  "h3_8": "884983d9b9fffff",
+  "h3_7": "874983d9bffffff"
 }
 ```
 
@@ -339,9 +322,24 @@ make dev        # Levantar y ver logs
 make watch      # Auto-compilar en cambios
 make fmt        # Formatear código
 make lint       # Ejecutar clippy
+make hooks-install   # Habilitar hook pre-push versionado (.githooks)
+make hooks-uninstall # Restaurar hooks por defecto
 ```
 
-Tests implementados (28 tests):
+### Hooks y Quality Gates
+
+- El repositorio incluye un hook versionado en `.githooks/pre-push`.
+- En cualquier push se valida formato con `cargo fmt --all -- --check`.
+- Si el push incluye tags (`refs/tags/*`), también ejecuta `cargo clippy --all-targets --all-features -- -D warnings`.
+- Para activarlo localmente en tu clon:
+
+```bash
+make hooks-install
+```
+
+- En CI/CD, el workflow de deploy (disparado por tags `vX.Y.Z`) también ejecuta clippy con `-D warnings` antes de compilar y desplegar.
+
+Tests implementados (30 tests):
 - ✅ Circuit breaker (8 tests)
 - ✅ H3 enricher (10 tests)
 - ✅ Domain events (2 tests)

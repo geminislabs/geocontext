@@ -2,7 +2,7 @@
 
 Guía rápida para poner en marcha el microservicio GeoContext en menos de 5 minutos.
 
-## Prerequisitos
+## Prerrequisitos
 
 - ✅ Docker Desktop instalado y corriendo
 - ✅ VS Code instalado
@@ -89,52 +89,35 @@ docker exec -it <kafka-container> kafka-console-producer \
   --topic siscom-minimal
 
 # Pegar este mensaje:
-{"id": 123, "latitude": "19.4326", "longitude": "-99.1332", "timestamp": "2024-01-15T10:30:00Z"}
+{"uuid":"veh-123","latitude":"19.4326","longitude":"-99.1332","gps_datetime":"2024-01-15 10:30:00","speed":"36.0","received_at":1770444644983}
 ```
 
-## Paso 7: Verificar Output
+## Paso 7: Verificar Salida
 
 En otra terminal, consumir del topic de salida:
 
 ```bash
 docker exec -it <kafka-container> kafka-console-consumer \
   --bootstrap-server localhost:9092 \
-  --topic siscom-geocontext \
+  --topic entity-position-updates \
   --from-beginning
 ```
 
 Deberías ver:
 ```json
 {
-  "backup_batery_voltage": "0.0",
-  "cell_id": "03675103",
-  "course": "0.00",
-  "engine_status": "OFF",
-  "fix_status": "1",
-  "gps_datetime": "2024-04-09 16:22:26",
-  "gps_epoch": 1712679746,
-  "latitude": "+20.574605",
-  "longitude": "-100.359826",
-  "main_battery_voltage": "11.43",
-  "mcc": "334",
-  "mnc": "20",
-  "msg_class": "STATUS",
-  "network_status": "SERVER DISCONNECTED",
-  "odometer": "730327",
-  "received_at": 1770444644983,
-  "rx_lvl": "33",
-  "speed": "0.00",
-  "stellites": "15",
-  "uuid": "ce69b8ac-4c55-5db8-a8b2-5b739b6b078e",
-  "geo_context": {
-    "h3": {
-      "r10": "8a4983d9b907fff",
-      "r9": "894983d9b93ffff",
-      "r8": "884983d9b9fffff",
-      "r7": "874983d9bffffff",
-      "r6": "864983d9fffffff"
-    }
-  }
+  "source": "gps",
+  "device_id": "veh-123",
+  "lat": 19.4326,
+  "lon": -99.1332,
+  "recorded_at": "2024-01-15 10:30:00",
+  "received_at": "1770444644983",
+  "speed_mps": 10.0,
+  "h3_10": "8a2a1072b59ffff",
+  "h3_10_ring_1": ["8a2a1072b58ffff", "8a2a1072b4fffff"],
+  "h3_9": "892a1072b5bffff",
+  "h3_8": "882a1072b5fffff",
+  "h3_7": "872a1072bffffff"
 }
 ```
 
@@ -168,8 +151,10 @@ Edita el archivo `.env` en la raíz del proyecto para cambiar:
 
 - 🔌 Conexión a Kafka (brokers, topics, credenciales)
 - 🛡️ Circuit breaker (thresholds, timeouts)
-- 🌍 H3 multi-resolución (r10 fijo y r9→r6 derivados)
+- 🌍 H3 geoespacial (r10 base + r9→r7 derivados, y vecinos `h3_10_ring_1`)
 - 📊 Nivel de logging
+
+Nota: en entornos reales usa los topics definidos por `KAFKA_INPUT_TOPIC_SISCOM`, `KAFKA_INPUT_TOPIC_MOBILITY` y `KAFKA_OUTPUT_TOPIC_ENTITY_POSITION` en tu `.env`.
 
 Después de editar, reinicia el servicio (`Ctrl+C` y `cargo run --release`).
 
@@ -220,7 +205,7 @@ Ahora que tienes el microservicio corriendo:
 
 ## 💡 Tips
 
-- Usa `Ctrl+` ` (backtick) para abrir la terminal integrada en VS Code
+- Usa `Ctrl+` (backtick) para abrir la terminal integrada en VS Code
 - El contenedor persiste cambios en el código (usa volumes)
 - Puedes usar el debugger de VS Code (`F5`)
 - `make watch` recompila automáticamente al guardar archivos

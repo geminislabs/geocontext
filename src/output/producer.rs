@@ -1,4 +1,4 @@
-use crate::domain::SiscomEnrichedEvent;
+use crate::domain::EntityPositionUpdate;
 use crate::kafka::{KafkaProducer, ProduceRequest};
 use anyhow::{Context, Result};
 use tracing::{debug, info};
@@ -22,7 +22,7 @@ impl OutputProducer {
     /// Publica un evento enriquecido al topic de salida
     pub async fn publish_event(
         &self,
-        event: &SiscomEnrichedEvent,
+        event: &EntityPositionUpdate,
         key: Option<&str>,
     ) -> Result<PublishResult> {
         let payload = event
@@ -71,27 +71,33 @@ pub struct PublishResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn test_enriched_event_serialization() {
-        use crate::domain::{GeoContext, H3Context, SiscomMinimalEvent};
+    fn test_entity_position_serialization() {
+        let event = EntityPositionUpdate {
+            source: Some("gps".to_string()),
+            device_id: Some("vehicle_456".to_string()),
+            lat: Some(20.5975),
+            lon: Some(-100.3780),
+            recorded_at: Some("2026-05-31T19:07:05Z".to_string()),
+            received_at: Some("2026-05-31T19:35:31.150211Z".to_string()),
+            accuracy_m: Some(3.0),
+            speed_mps: Some(0.0),
+            heading: Some(0.0),
+            altitude_m: Some(1829.67),
+            battery_level: Some(80.0),
+            h3_10: Some("8a4983ca610ffff".to_string()),
+            h3_10_ring_1: Some(vec![
+                "8a4983ca6127fff".to_string(),
+                "8a4983ca6107fff".to_string(),
+            ]),
+            h3_9: Some("894983ca610ffff".to_string()),
+            h3_8: Some("884983ca61fffff".to_string()),
+            h3_7: Some("874983ca6ffffff".to_string()),
+        };
 
-        let minimal = SiscomMinimalEvent::new(json!({"id": 123}));
-        let enriched = SiscomEnrichedEvent::from_minimal(minimal).with_geo_context(GeoContext {
-            h3: Some(H3Context::new(
-                "8c2a1072b59ffff".to_string(),
-                "8b2a1072b59ffff".to_string(),
-                "8a2a1072b59ffff".to_string(),
-                "892a1072b59ffff".to_string(),
-                "882a1072b59ffff".to_string(),
-            )),
-            region: None,
-            metadata: None,
-        });
-
-        let json_str = enriched.to_json().unwrap();
-        assert!(json_str.contains("\"h3\""));
-        assert!(json_str.contains("8c2a1072b59ffff"));
+        let json_str = event.to_json().unwrap();
+        assert!(json_str.contains("\"source\":\"gps\""));
+        assert!(json_str.contains("\"h3_10\":\"8a4983ca610ffff\""));
     }
 }
